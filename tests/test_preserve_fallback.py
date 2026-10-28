@@ -207,6 +207,11 @@ class TestPresetAndHealth(_ServerCase):
                                  'sellPriceTax', 'MAX_RETRY', 'v6.0.4', 'https://x.io/a?b=1'])
         self.assertEqual(pv.restore(masked, spans), text)
 
+    def test_code_preset_stops_at_cjk(self):
+        text = '\u68c0\u67e5build/out.txt\u4e2d\u7684sellPriceTax\u548c`ls`'
+        _, spans = pv.mask(text, 'code')
+        self.assertEqual(spans, ['build/out.txt', 'sellPriceTax', '`ls`'])
+
     def test_preset_mixes_with_regex(self):
         self.assertEqual(pv.expand_patterns(['code', r'\bRealm\b'])[-1], r'\bRealm\b')
         self.assertEqual(pv.expand_patterns(None), [])

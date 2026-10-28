@@ -142,7 +142,7 @@ def mask(text: str, patterns: Optional[Iterable[str]]) -> Tuple[str, List[str]]:
     if not patterns:
         return text, []
 
-    combined = re.compile('|'.join('(?:{})'.format(p) for p in patterns))
+    combined = re.compile('|'.join('(?:{})'.format(p) for p in patterns), re.ASCII)  # \w must not swallow CJK text
     spans, parts, last = [], [], 0
     for m in combined.finditer(text):
         if m.start() == m.end():
