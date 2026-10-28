@@ -10,6 +10,10 @@ A keyed engine joins `translators_pool` only when all its required fields are se
        api_key = "xxxx:fx"
   2. environment: TRANSLATORS_<ENGINE>_<FIELD>, e.g. TRANSLATORS_DEEPLAPI_API_KEY
   3. keyword arguments of the engine call, e.g. api_key='...'
+A file value of "@keychain" is read from the macOS login keychain: service "translators",
+account "<engine>.<field>", stored with
+  security add-generic-password -U -s translators -a deeplApi.api_key -w
+(`-w` last, so `security` prompts for the secret and it stays out of shell history).
 Keep the file private (chmod 600); a group/world-readable file triggers a warning.
 """
 
@@ -18,12 +22,30 @@ import re
 import stat
 import warnings
 import configparser
+import subprocess
+import sys
 from typing import Dict, Optional, Tuple
 
-__all__ = ('KEYED_ENGINES', 'default_path', 'load', 'get', 'is_configured')
+__all__ = ('KEYED_ENGINES', 'default_path', 'load', 'get', 'is_configured', 'KEYCHAIN', 'keychain_lookup')
 
 # engine name -> (required fields, optional fields)
 KEYED_ENGINES: Dict[str, Tuple[Tuple[str, ...], Tuple[str, ...]]] = {}
+KEYCHAIN = '@keychain'
+KEYCHAIN_SERVICE = 'translators'
+_cache: Optional[Dict[str, Dict[str, str]]] = None
+
+
+def keychain_lookup(engine: str, field: str) -> Optional[str]:
+    """Read service `translators`, account `<engine>.<field>` from the macOS keychain; None if absent."""
+    if sys.platform != 'darwin' or not os.path.exists('/usr/bin/security'):
+        warnings.warn(f'{engine}.{field} = "{KEYCHAIN}" needs the macOS keychain.')
+        return None
+    r = subprocess.run(['/usr/bin/security', 'find-generic-password', '-s', KEYCHAIN_SERVICE,
+                        '-a', f'{engine}.{field}', '-w'], capture_output=True, text=True)
+    if r.returncode != 0:
+        warnings.warn(f'No keychain item for service "{KEYCHAIN_SERVICE}", account "{engine}.{field}".')
+        return None
+    return r.stdout.rstrip('\n') or None
 
 
 def default_path() -> str:
@@ -58,6 +80,9 @@ def load(path: Optional[str] = None) -> Dict[str, Dict[str, str]]:
     out = {}
     for engine, (required, optional) in KEYED_ENGINES.items():
         fields = dict(data.get(engine, {}))
+        for field, value in list(fields.items()):
+            if value == KEYCHAIN:
+                fields[field] = keychain_lookup(engine, field)
         for field in required + optional:
             env = 'TRANSLATORS_{}_{}'.format(re.sub(r'\W', '', engine).upper(), field.upper())
             if os.environ.get(env):
@@ -65,6 +90,8 @@ def load(path: Optional[str] = None) -> Dict[str, Dict[str, str]]:
         fields = {k: v for k, v in fields.items() if v}
         if fields:
             out[engine] = fields
+    global _cache
+    _cache = out
     return out
 
 
@@ -72,7 +99,9 @@ def get(engine: str, field: str, kwargs: Optional[dict] = None, creds: Optional[
     """Call kwargs win over loaded credentials."""
     if kwargs and kwargs.get(field):
         return kwargs[field]
-    return (creds if creds is not None else load()).get(engine, {}).get(field)
+    if creds is None:
+        creds = _cache if _cache is not None else load()
+    return creds.get(engine, {}).get(field)
 
 
 def is_configured(engine: str, creds: Optional[dict] = None) -> bool:

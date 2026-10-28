@@ -69,6 +69,30 @@ class TestCredentials(_CredsCase):
         self.assertTrue(any('chmod 600' in str(x.message) for x in w))
 
 
+class TestKeychain(_CredsCase):
+    def test_keychain_placeholder_is_resolved(self):
+        self.write('[deeplApi]\napi_key = "@keychain"\n')
+        done = mock.Mock(returncode=0, stdout='secret:fx\n')
+        with mock.patch.object(credentials.sys, 'platform', 'darwin'), \
+                mock.patch.object(credentials.os.path, 'exists', return_value=True), \
+                mock.patch.object(credentials.subprocess, 'run', return_value=done) as run:
+            creds = credentials.load()
+        self.assertEqual(creds['deeplApi']['api_key'], 'secret:fx')
+        self.assertEqual(run.call_args.args[0][-5:], ['-s', 'translators', '-a', 'deeplApi.api_key', '-w'])
+        self.assertEqual(credentials.get('deeplApi', 'api_key'), 'secret:fx')  # served from cache
+
+    def test_missing_keychain_item_leaves_engine_unconfigured(self):
+        self.write('[deeplApi]\napi_key = "@keychain"\n')
+        with mock.patch.object(credentials.sys, 'platform', 'darwin'), \
+                mock.patch.object(credentials.os.path, 'exists', return_value=True), \
+                mock.patch.object(credentials.subprocess, 'run', return_value=mock.Mock(returncode=44, stdout='')), \
+                warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter('always')
+            creds = credentials.load()
+        self.assertFalse(credentials.is_configured('deeplApi', creds))
+        self.assertTrue(any('No keychain item' in str(x.message) for x in w))
+
+
 class TestPool(_CredsCase):
     def test_configured_engine_joins_both_pools(self):
         self.assertNotIn('deeplApi', translators.translators_pool)
