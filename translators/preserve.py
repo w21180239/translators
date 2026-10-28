@@ -10,9 +10,98 @@ the engine kept every token exactly once.
 """
 
 import re
-from typing import Iterable, List, Optional, Tuple, Union
+import time
+import threading
+from typing import Dict, Iterable, List, Optional, Tuple, Union
 
-__all__ = ('PreserveError', 'normalize_engines', 'mask', 'restore')
+__all__ = ('PreserveError', 'PRESETS', 'expand_patterns', 'EngineHealth', 'HEALTH',
+           'normalize_engines', 'mask', 'restore')
+
+_EXT = (r'py|js|ts|tsx|jsx|go|rs|php|rb|java|kt|swift|c|h|cpp|cs|sh|md|txt|log|json|ya?ml|toml'
+        r'|ini|cfg|xml|html|css|sql|csv|lock|patch|diff')
+
+# Named pattern sets usable in `preserve`; earlier patterns win at the same position.
+PRESETS: Dict[str, List[str]] = {
+    'code': [
+        r'https?://[^\s<>"\'`]+',                 # URLs
+        r'`[^`\n]+`',                             # inline code spans
+        r'(?:\.{0,2}/)?(?:[\w.-]+/)+[\w.-]*',     # paths with a slash
+        r'\b[\w.-]*\w\.(?:' + _EXT + r')\b',      # file names
+        r'(?<![\w`])\.(?:' + _EXT + r')\b',       # bare extensions (.txt)
+        r'(?<![\w&])#\d+\b',                      # issue / MR refs
+        r'(?<![\w-])--?[A-Za-z][\w-]*',           # CLI flags
+        r'\b[a-z]+[A-Z]\w*\b',                    # camelCase
+        r'\b[A-Z][a-z]+[A-Z]\w*\b',               # PascalCase with an inner capital
+        r'\b[A-Za-z]\w*_\w+\b',                   # snake_case / CONST_CASE
+        r'\bv?\d+(?:\.\d+)+\b',                   # versions
+    ],
+}
+
+
+def expand_patterns(preserve: Union[None, str, Iterable[str]]) -> List[str]:
+    """
+    :param preserve: None, a preset name ('code'), or an iterable mixing preset names and regex patterns.
+    :return: flat list of regex patterns.
+    """
+    if not preserve:
+        return []
+    if isinstance(preserve, str):
+        preserve = [preserve]
+    out = []
+    for p in preserve:
+        if p in PRESETS:
+            out.extend(PRESETS[p])
+        elif p:
+            out.append(p)
+    return out
+
+
+class EngineHealth:
+    """
+    Process-wide record of engine failures. An engine that failed `threshold` times in a row is
+    tried last for `cooldown` seconds, so a fallback chain stops waiting on a dead engine first.
+    """
+
+    def __init__(self, threshold: int = 3, cooldown: float = 300.0):
+        self.threshold, self.cooldown = threshold, cooldown
+        self._fails: Dict[str, int] = {}
+        self._since: Dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    def ok(self, engine: str) -> None:
+        with self._lock:
+            self._fails.pop(engine, None)
+            self._since.pop(engine, None)
+
+    def fail(self, engine: str) -> None:
+        with self._lock:
+            self._fails[engine] = self._fails.get(engine, 0) + 1
+            if self._fails[engine] >= self.threshold:
+                self._since.setdefault(engine, time.monotonic())
+
+    def is_cooling(self, engine: str) -> bool:
+        with self._lock:
+            since = self._since.get(engine)
+            if since is None:
+                return False
+            if time.monotonic() - since >= self.cooldown:
+                self._since.pop(engine, None)
+                self._fails[engine] = self.threshold - 1  # one more failure re-trips it
+                return False
+            return True
+
+    def order(self, engines: List[str]) -> List[str]:
+        """Healthy engines first (keeping caller order), cooling ones last; none is dropped."""
+        cooling = [e for e in engines if self.is_cooling(e)]
+        return [e for e in engines if e not in cooling] + cooling
+
+    def reset(self) -> None:
+        with self._lock:
+            self._fails.clear()
+            self._since.clear()
+
+
+HEALTH = EngineHealth()
 
 _NO_SPACE_BEFORE = ",.;:!?)\uff0c\u3002\uff1b\uff1a\uff01\uff1f\uff09\u3001"
 _NO_SPACE_AFTER = "(\uff08"
@@ -49,7 +138,7 @@ def mask(text: str, patterns: Optional[Iterable[str]]) -> Tuple[str, List[str]]:
     :param patterns: regex patterns, or None.
     :return: (masked_text, spans), where spans[n-1] is the original text of token n.
     """
-    patterns = [p for p in (patterns or ()) if p]
+    patterns = expand_patterns(patterns)
     if not patterns:
         return text, []
 

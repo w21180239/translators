@@ -86,6 +86,7 @@ class _ServerCase(unittest.TestCase):
 
     def setUp(self):
         self.tss = self.module.tss
+        pv.HEALTH.reset()
         fakes = {'fake_raise': fake_raise, 'fake_drop': fake_drop, 'fake_ok': fake_ok, 'fake_empty': fake_empty}
         self.fakes = fakes
         patch_dict = mock.patch.dict(self.tss.translators_dict, self._wrap(fakes))
@@ -156,6 +157,7 @@ class TestFallbackSync(_ServerCase):
 
 class TestFallbackAsync(unittest.TestCase):
     def setUp(self):
+        pv.HEALTH.reset()
         self.tss = srv_async.tss
 
         async def a_raise(query_text, **kw):
@@ -193,6 +195,45 @@ class TestFallbackAsync(unittest.TestCase):
             self.run_async(TEXT, translator='a_raise,a_drop', preserve=PATTERNS)
         self.assertIn('a_raise -> RuntimeError: boom', str(cm.exception))
         self.assertIn('a_drop -> PreserveError', str(cm.exception))
+
+
+
+class TestPresetAndHealth(_ServerCase):
+    def test_code_preset_protects_common_spans(self):
+        text = ('Run `make test`, edit src/app/main.py and build/out.txt, see #42, '
+                'pass --dry-run to sellPriceTax via MAX_RETRY on v6.0.4 at https://x.io/a?b=1 now.')
+        masked, spans = pv.mask(text, 'code')
+        self.assertEqual(spans, ['`make test`', 'src/app/main.py', 'build/out.txt', '#42', '--dry-run',
+                                 'sellPriceTax', 'MAX_RETRY', 'v6.0.4', 'https://x.io/a?b=1'])
+        self.assertEqual(pv.restore(masked, spans), text)
+
+    def test_preset_mixes_with_regex(self):
+        self.assertEqual(pv.expand_patterns(['code', r'\bRealm\b'])[-1], r'\bRealm\b')
+        self.assertEqual(pv.expand_patterns(None), [])
+
+    def test_failing_engine_moves_to_back_after_threshold(self):
+        calls = []
+        def flaky(query_text, **kw):
+            calls.append('fake_raise')
+            raise RuntimeError('down')
+        self.tss.translators_dict['fake_raise'] = flaky
+        for _ in range(3):
+            self.assertEqual(self.call(TEXT, translator=['fake_raise', 'fake_ok']), 'T:' + TEXT)
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(pv.HEALTH.is_cooling('fake_raise'))
+        result, engine = self.call(TEXT, translator=['fake_raise', 'fake_ok'], if_return_engine=True)
+        self.assertEqual((engine, len(calls)), ('fake_ok', 3))  # skipped while cooling
+
+    def test_cooling_engine_still_tried_when_alone(self):
+        for _ in range(3):
+            pv.HEALTH.fail('fake_ok')
+        self.assertEqual(self.call(TEXT, translator=['fake_ok', 'fake_raise']), 'T:' + TEXT)
+        self.assertFalse(pv.HEALTH.is_cooling('fake_ok'))
+
+    def test_preserve_error_does_not_count_as_engine_failure(self):
+        for _ in range(4):
+            self.call(TEXT, translator=['fake_drop', 'fake_ok'], preserve=PATTERNS)
+        self.assertFalse(pv.HEALTH.is_cooling('fake_drop'))
 
 
 if __name__ == '__main__':

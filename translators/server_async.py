@@ -1111,7 +1111,7 @@ class YoudaoV2(Tse):
         self.api_url = 'https://dict.youdao.com/webtranslate'
         self.api_host = 'https://dict.youdao.com'
         self.get_js_url = None
-        self.get_js_pattern = 'https://shared.ydstatic.com/dict/translation-website/([^/]+)/js/app.([^\.]+).js'
+        self.get_js_pattern = r'https://shared.ydstatic.com/dict/translation-website/([^/]+)/js/app.([^\.]+).js'
         self.get_sign_url = None
         self.get_sign_pattern = ''
         self.login_url = 'https://dict.youdao.com/login/acc/query/accountinfo'
@@ -6249,7 +6249,7 @@ class TranslatorsServer:
         :param from_language: str, default 'auto'.
         :param to_language: str, default 'en'.
         :param if_use_preacceleration: bool, default False.
-        :param preserve: Optional[Iterable[str]], default None. Regex patterns of spans that must stay untranslated. Not allowed with is_detail_result.
+        :param preserve: Optional[Union[str, Iterable[str]]], default None. Regex patterns of spans that must stay untranslated, or preset names ('code': code spans, URLs, paths, file names, flags, identifiers, versions, #refs). Not allowed with is_detail_result.
         :param if_return_engine: bool, default False. If True, return (result, engine_name).
         :param **kwargs:
                 :param is_detail_result: bool, default False.
@@ -6300,7 +6300,7 @@ class TranslatorsServer:
 
         masked_text, spans = preserve_helper.mask(query_text, preserve)
         failures = []
-        for engine in engines:
+        for engine in preserve_helper.HEALTH.order(engines):
             if engine not in self.translators_pool:
                 failures.append((engine, 'not in translators_pool'))
                 continue
@@ -6320,8 +6320,11 @@ class TranslatorsServer:
                 elif not result:
                     raise TranslatorError('empty result')
             except Exception as e:
+                if not isinstance(e, preserve_helper.PreserveError):
+                    preserve_helper.HEALTH.fail(engine)
                 failures.append((engine, '{}: {}'.format(type(e).__name__, e)))
                 continue
+            preserve_helper.HEALTH.ok(engine)
             return (result, engine) if if_return_engine else result
 
         raise TranslatorError('All translators failed: ' + '; '.join('{} -> {}'.format(e, r) for e, r in failures))
