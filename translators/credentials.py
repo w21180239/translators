@@ -10,10 +10,11 @@ A keyed engine joins `translators_pool` only when all its required fields are se
        api_key = "xxxx:fx"
   2. environment: TRANSLATORS_<ENGINE>_<FIELD>, e.g. TRANSLATORS_DEEPLAPI_API_KEY
   3. keyword arguments of the engine call, e.g. api_key='...'
-A file value of "@keychain" is read from the macOS login keychain: service "translators",
-account "<engine>.<field>", stored with
-  security add-generic-password -U -s translators -a deeplApi.api_key -w
-(`-w` last, so `security` prompts for the secret and it stays out of shell history).
+A file value of "@keyring" (alias "@keychain") is read from the OS credential store, service "translators",
+account "<engine>.<field>": macOS keychain via /usr/bin/security, otherwise the optional `keyring` package
+(Windows Credential Manager, Linux Secret Service). Store a secret with a prompt, so it stays out of history:
+  keyring set translators deeplApi.api_key                             # any OS, needs `pip install keyring`
+  security add-generic-password -U -s translators -a deeplApi.api_key -w   # macOS, no extra package
 Keep the file private (chmod 600); a group/world-readable file triggers a warning.
 """
 
@@ -26,26 +27,39 @@ import subprocess
 import sys
 from typing import Dict, Optional, Tuple
 
-__all__ = ('KEYED_ENGINES', 'default_path', 'load', 'get', 'is_configured', 'KEYCHAIN', 'keychain_lookup')
+__all__ = ('KEYED_ENGINES', 'default_path', 'load', 'get', 'is_configured', 'KEYRING', 'keyring_lookup')
 
 # engine name -> (required fields, optional fields)
 KEYED_ENGINES: Dict[str, Tuple[Tuple[str, ...], Tuple[str, ...]]] = {}
-KEYCHAIN = '@keychain'
-KEYCHAIN_SERVICE = 'translators'
+KEYRING = ('@keyring', '@keychain')
+KEYRING_SERVICE = 'translators'
 _cache: Optional[Dict[str, Dict[str, str]]] = None
 
 
-def keychain_lookup(engine: str, field: str) -> Optional[str]:
-    """Read service `translators`, account `<engine>.<field>` from the macOS keychain; None if absent."""
-    if sys.platform != 'darwin' or not os.path.exists('/usr/bin/security'):
-        warnings.warn(f'{engine}.{field} = "{KEYCHAIN}" needs the macOS keychain.')
-        return None
-    r = subprocess.run(['/usr/bin/security', 'find-generic-password', '-s', KEYCHAIN_SERVICE,
-                        '-a', f'{engine}.{field}', '-w'], capture_output=True, text=True)
-    if r.returncode != 0:
-        warnings.warn(f'No keychain item for service "{KEYCHAIN_SERVICE}", account "{engine}.{field}".')
-        return None
-    return r.stdout.rstrip('\n') or None
+def keyring_lookup(engine: str, field: str) -> Optional[str]:
+    """Read service `translators`, account `<engine>.<field>` from the OS credential store; None if absent."""
+    account = f'{engine}.{field}'
+    if sys.platform == 'darwin' and os.path.exists('/usr/bin/security'):
+        r = subprocess.run(['/usr/bin/security', 'find-generic-password', '-s', KEYRING_SERVICE,
+                            '-a', account, '-w'], capture_output=True, text=True)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.rstrip('\n')
+    try:
+        import keyring
+    except ImportError:
+        if sys.platform != 'darwin':
+            warnings.warn(f'{account} = "@keyring" needs the `keyring` package: pip install keyring')
+            return None
+    else:
+        try:
+            value = keyring.get_password(KEYRING_SERVICE, account)
+        except Exception as e:  # no usable backend, locked store, ...
+            warnings.warn(f'keyring lookup for {account} failed: {e}')
+            return None
+        if value:
+            return value
+    warnings.warn(f'No credential-store item for service "{KEYRING_SERVICE}", account "{account}".')
+    return None
 
 
 def default_path() -> str:
@@ -81,8 +95,8 @@ def load(path: Optional[str] = None) -> Dict[str, Dict[str, str]]:
     for engine, (required, optional) in KEYED_ENGINES.items():
         fields = dict(data.get(engine, {}))
         for field, value in list(fields.items()):
-            if value == KEYCHAIN:
-                fields[field] = keychain_lookup(engine, field)
+            if value in KEYRING:
+                fields[field] = keyring_lookup(engine, field)
         for field in required + optional:
             env = 'TRANSLATORS_{}_{}'.format(re.sub(r'\W', '', engine).upper(), field.upper())
             if os.environ.get(env):
