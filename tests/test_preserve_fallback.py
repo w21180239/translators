@@ -241,6 +241,37 @@ class TestPresetAndHealth(_ServerCase):
         self.assertFalse(pv.HEALTH.is_cooling('fake_drop'))
 
 
+class TestAutoChain(_ServerCase):
+    def test_expand_chain_tokens_and_dedup(self):
+        self.assertEqual(pv.expand_chain(['google', 'keyed', 'bing', 'google'], ['deeplApi', 'azure']),
+                         ['google', 'deeplApi', 'azure', 'bing'])
+        self.assertEqual(pv.expand_chain(['keyed', 'bing'], []), ['bing'])
+        with mock.patch.dict(os.environ, {'TRANSLATORS_CHAIN': 'keyed,auto,edge'}):
+            self.assertEqual(pv.expand_chain(['auto', 'bing'], ['deeplApi']), ['deeplApi', 'edge', 'bing'])
+        with mock.patch.dict(os.environ, {'TRANSLATORS_CHAIN': ''}):
+            self.assertEqual(pv.expand_chain(['auto'], [])[:3], ['google', 'edge', 'bing'])
+
+    def test_configured_keyed_follows_priority_not_pool_order(self):
+        with mock.patch.object(self.tss, 'translators_pool', ['aliyunApi', 'google', 'deeplApi', 'azure']):
+            self.assertEqual(self.tss.configured_keyed(), ['deeplApi', 'azure', 'aliyunApi'])
+
+    def test_auto_uses_env_chain_through_translate_text(self):
+        with mock.patch.dict(os.environ, {'TRANSLATORS_CHAIN': 'fake_raise,fake_ok'}):
+            self.assertEqual(self.call('hi', translator='auto', if_return_engine=True), ('T:hi', 'fake_ok'))
+
+    def test_chain_sets_default_timeout_single_does_not(self):
+        seen = []
+        self.tss.translators_dict['fake_ok'] = lambda query_text, **kw: seen.append(kw.get('timeout', 'unset')) or 'x'
+        self.call('hi', translator='fake_ok,fake_raise')
+        self.call('hi', translator='fake_ok,fake_raise', timeout=3)
+        self.call('hi', translator='fake_ok')
+        self.assertEqual(seen, [pv.CHAIN_TIMEOUT, 3, 'unset'])
+
+    def test_keyed_engines_have_a_priority(self):
+        from translators import keyed
+        self.assertEqual(set(keyed.KEYED_PRIORITY), set(keyed.KEYED_CLASSES))
+
+
 
 class TestRetiredAndAliases(_ServerCase):
     def test_retired_engines_left_out_of_pool(self):

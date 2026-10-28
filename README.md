@@ -149,6 +149,10 @@ text, engine = ts.translate_text(
 )
 ```
 
+In a chain, each engine call gets `timeout=15` seconds unless you pass `timeout`, so a stalled engine cannot hold up the rest. An engine that fails 3 times in a row is tried last for the next 5 minutes; after that it gets its place back, and one more failure sends it to the end again.
+
+`translator='auto'` expands to `google,edge,bing,keyed,volcEngine,caiyun,sogou,papago,myMemory,youdao`. The `keyed` token stands for the configured keyed engines (see below) in this order: `deeplApi, azure, volcEngineApi, caiyunApi, youdaoApi, niutransApi, googleCloud, baiduApi, aliyunApi`; providers that bill overage automatically come last. Set `TRANSLATORS_CHAIN` to change what `auto` means, e.g. `TRANSLATORS_CHAIN=keyed,google,edge` to spend API quota before the free web engines. `keyed` can also appear in any chain you pass.
+
 `preserve` takes regex patterns for spans that must stay untranslated (code, versions, names). Each match is swapped for a placeholder token (`QX1Z`, `QX2Z`, ...) before the engine call and restored afterwards. An engine that drops or duplicates a token counts as failed, so the next engine is tried. `preserve` cannot be combined with `is_detail_result=True`. The helpers live in `translators/preserve.py`.
 
 ```python

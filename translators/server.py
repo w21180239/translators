@@ -6016,6 +6016,10 @@ class TranslatorsServer:
         self.success_translators_pool = []
         self.failure_translators_pool = []
 
+    def configured_keyed(self) -> List[str]:
+        """Keyed engines currently in translators_pool, in keyed_helper.KEYED_PRIORITY order."""
+        return [n for n in keyed_helper.KEYED_PRIORITY if n in self.translators_pool]
+
     def refresh_keyed_engines(self, path: Optional[str] = None) -> List[str]:
         """
         Put keyed (official API) engines whose credentials are configured into translators_pool, drop the rest.
@@ -6083,7 +6087,7 @@ class TranslatorsServer:
         :return: str or dict, or (str or dict, engine_name) if if_return_engine.
         """
 
-        if isinstance(translator, str) and ',' not in translator and not preserve:
+        if isinstance(translator, str) and ',' not in translator and not preserve and translator.strip() not in preserve_helper.CHAIN_TOKENS:
             translator = self._resolve_translator(translator)
             if translator not in self.translators_pool:
                 raise TranslatorError
@@ -6094,7 +6098,7 @@ class TranslatorsServer:
             result = self.translators_dict[translator](query_text=query_text, from_language=from_language, to_language=to_language, **kwargs)
             return (result, translator) if if_return_engine else result
 
-        engines = preserve_helper.normalize_engines(translator)
+        engines = preserve_helper.expand_chain(preserve_helper.normalize_engines(translator), self.configured_keyed())
         if not engines:
             raise TranslatorError('No translator given.')
         if preserve and kwargs.get('is_detail_result', False):
@@ -6103,6 +6107,7 @@ class TranslatorsServer:
         if not self.pre_acceleration_label and if_use_preacceleration:
             _ = self.preaccelerate()
 
+        kwargs.setdefault('timeout', preserve_helper.CHAIN_TIMEOUT)
         masked_text, spans = preserve_helper.mask(query_text, preserve)
         failures, resolved = [], []
         for engine in engines:
