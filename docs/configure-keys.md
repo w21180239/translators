@@ -10,6 +10,16 @@ Later sources override earlier ones:
 2. Environment variables named `TRANSLATORS_<ENGINE>_<FIELD>`, upper-cased, e.g. `TRANSLATORS_DEEPLAPI_API_KEY`, `TRANSLATORS_BAIDUAPI_SECRET_KEY`.
 3. Keyword arguments on the call, e.g. `translate_text(..., translator='azure', api_key='...')`. These only override values. An unconfigured engine stays out of the pool.
 
+### Which source to use
+
+All three work on every OS and can be mixed per field.
+
+| Situation | Use | Why |
+| --- | --- | --- |
+| Personal machine | `"@keyring"` in the file, secret in the OS credential store | Encrypted at rest and read only when the library needs it. An exported variable sits in plaintext in a shell profile and is inherited by every child process, including coding agents that may print their environment. |
+| CI, containers, servers | Environment variables injected by the platform's secret store | No desktop credential store there; the platform keeps the secret off disk. |
+| Quick local test | Plain value in the file, `chmod 600` | Simplest; the library warns if other users can read the file. |
+
 ### Keeping secrets in the OS credential store
 
 A file value of `"@keyring"` means "read this from the operating system's credential store", using service `translators` and account `<engine>.<field>`. The file then holds no secret. `"@keychain"` is accepted as an alias.
