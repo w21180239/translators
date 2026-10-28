@@ -57,6 +57,7 @@ import cryptography.hazmat.primitives.serialization as cry_serialization
 import cryptography.hazmat.primitives.asymmetric.padding as cry_asym_padding
 
 from translators import preserve as preserve_helper
+from translators import retired as retired_helper
 
 
 LangMapKwargsType = Union[str, bool]
@@ -5994,6 +5995,9 @@ class TranslatorsServer:
             'tilde': self.tilde, 'translateCom': self.translateCom, 'translateMe': self.translateMe, 'utibet': self.utibet, 'volcEngine': self.volcEngine,
             'xunjie': self.xunjie, 'yandex': self.yandex, 'yeekit': self.yeekit, 'youdao': self.youdao,
         }
+        for _name in list(retired_helper.RETIRED_TRANSLATORS) + list(retired_helper.TRANSLATOR_ALIASES):
+            self.translators_dict.pop(_name, None)
+            self._translators_dict.pop(_name, None)
         self.translators_pool = list(self.translators_dict.keys())
         self.not_en_langs = {"utibet": "ti", "mglip": "mon"}
         self.not_zh_langs = {
@@ -6007,6 +6011,13 @@ class TranslatorsServer:
         self.example_query_text = '你好。\n欢迎你！'
         self.success_translators_pool = []
         self.failure_translators_pool = []
+
+    @staticmethod
+    def _resolve_translator(translator: str) -> str:
+        try:
+            return retired_helper.resolve(translator)
+        except LookupError as e:
+            raise TranslatorError(str(e))
 
     def translate_text(
         self,
@@ -6051,6 +6062,7 @@ class TranslatorsServer:
         """
 
         if isinstance(translator, str) and ',' not in translator and not preserve:
+            translator = self._resolve_translator(translator)
             if translator not in self.translators_pool:
                 raise TranslatorError
 
@@ -6070,8 +6082,13 @@ class TranslatorsServer:
             _ = self.preaccelerate()
 
         masked_text, spans = preserve_helper.mask(query_text, preserve)
-        failures = []
-        for engine in preserve_helper.HEALTH.order(engines):
+        failures, resolved = [], []
+        for engine in engines:
+            try:
+                resolved.append(retired_helper.resolve(engine))
+            except LookupError as e:
+                failures.append((engine, str(e)))
+        for engine in preserve_helper.HEALTH.order(list(dict.fromkeys(resolved))):
             if engine not in self.translators_pool:
                 failures.append((engine, 'not in translators_pool'))
                 continue
@@ -6136,6 +6153,7 @@ class TranslatorsServer:
         :return: str
         """
 
+        translator = self._resolve_translator(translator)
         if translator not in self.translators_pool or kwargs.get('is_detail_result', False) or n_jobs > self.cpu_cnt:
             raise TranslatorError
         if parallel_way not in ['threading', 'multiprocessing']:
@@ -6189,6 +6207,7 @@ class TranslatorsServer:
         return result
 
     def get_languages(self, translator: str = 'bing'):
+        translator = self._resolve_translator(translator)
         language_map = self._translators_dict[translator].language_map
         if language_map:
             return language_map
