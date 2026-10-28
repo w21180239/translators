@@ -14,11 +14,16 @@ import requests
 
 from translators import credentials
 
-__all__ = ('KeyedEngineError', 'KeyedEngine', 'KEYED_CLASSES', 'register', 'DeeplApi', 'Azure', 'GoogleCloud',
+__all__ = ('KeyedEngineError', 'KeyedEngine', 'KEYED_CLASSES', 'KEYED_PRIORITY', 'register', 'DeeplApi', 'Azure', 'GoogleCloud',
            'BaiduApi', 'YoudaoApi', 'CaiyunApi', 'NiutransApi', 'AliyunApi', 'VolcEngineApi',
            'aliyun_rpc_sign', 'volc_sign')
 
 KEYED_CLASSES: Dict[str, Type['KeyedEngine']] = {}
+
+# Order of keyed engines inside a chain's 'keyed' token: quality first, providers that bill overage
+# automatically (googleCloud, baiduApi, aliyunApi) last.
+KEYED_PRIORITY = ('deeplApi', 'azure', 'volcEngineApi', 'caiyunApi', 'youdaoApi', 'niutransApi',
+                  'googleCloud', 'baiduApi', 'aliyunApi')
 
 TRAD_ZH = ('zh-TW', 'zh-tw', 'zh-Hant', 'zh-CHT', 'zh-HK', 'zh-hk')
 SIMP_ZH = ('zh', 'zh-CN', 'zh-cn', 'zh-CHS', 'zh-Hans', 'zh-Hans_CN', 'cn', 'chi', 'Chinese')

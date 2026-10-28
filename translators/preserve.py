@@ -9,13 +9,15 @@ token ` QX{n}Z `; restore() puts the original spans back and verifies that
 the engine kept every token exactly once.
 """
 
+import os
 import re
 import time
 import threading
 from typing import Dict, Iterable, List, Optional, Tuple, Union
 
 __all__ = ('PreserveError', 'PRESETS', 'expand_patterns', 'EngineHealth', 'HEALTH',
-           'normalize_engines', 'mask', 'restore')
+           'normalize_engines', 'CHAIN_TIMEOUT', 'AUTO_CHAIN', 'CHAIN_TOKENS', 'expand_chain',
+           'mask', 'restore')
 
 _EXT = (r'py|js|ts|tsx|jsx|go|rs|php|rb|java|kt|swift|c|h|cpp|cs|sh|md|txt|log|json|ya?ml|toml'
         r'|ini|cfg|xml|html|css|sql|csv|lock|patch|diff')
@@ -119,6 +121,33 @@ def normalize_engines(translator: Union[str, Iterable[str]]) -> List[str]:
     if isinstance(translator, str):
         translator = translator.split(',')
     return [str(t).strip() for t in translator if str(t).strip()]
+
+
+# Per-request timeout applied to each engine of a chain unless the caller passes `timeout`;
+# scrapers default to None, so one stalled engine would block the whole chain.
+CHAIN_TIMEOUT = 15.0
+
+# 'auto' expands to this; 'keyed' expands to the configured keyed engines. Override with $TRANSLATORS_CHAIN.
+AUTO_CHAIN = 'google,edge,bing,keyed,volcEngine,caiyun,sogou,papago,myMemory,youdao'
+CHAIN_TOKENS = ('auto', 'keyed')
+
+
+def expand_chain(engines: List[str], keyed: List[str]) -> List[str]:
+    """
+    :param engines: normalized engine names, may contain 'auto' and 'keyed'.
+    :param keyed: configured keyed engines, in priority order.
+    :return: engine names with the tokens expanded and duplicates removed, first occurrence wins.
+    """
+    out = []
+    for e in engines:
+        if e == 'auto':
+            auto = normalize_engines(os.environ.get('TRANSLATORS_CHAIN') or AUTO_CHAIN)
+            out.extend(expand_chain([a for a in auto if a != 'auto'], keyed))
+        elif e == 'keyed':
+            out.extend(keyed)
+        else:
+            out.append(e)
+    return list(dict.fromkeys(out))
 
 
 def _token(n: int) -> str:
