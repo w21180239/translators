@@ -241,5 +241,28 @@ class TestPresetAndHealth(_ServerCase):
         self.assertFalse(pv.HEALTH.is_cooling('fake_drop'))
 
 
+
+class TestRetiredAndAliases(_ServerCase):
+    def test_retired_engines_left_out_of_pool(self):
+        from translators import retired
+        for name in list(retired.RETIRED_TRANSLATORS) + list(retired.TRANSLATOR_ALIASES):
+            self.assertNotIn(name, srv.tss.translators_pool)
+            self.assertNotIn(name, srv_async.tss.translators_pool)
+
+    def test_retired_single_name_raises_with_reason(self):
+        with self.assertRaises(TranslatorError) as cm:
+            self.call(TEXT, translator='volcEngine')
+        self.assertIn('retired', str(cm.exception))
+
+    def test_retired_in_chain_is_skipped(self):
+        result, engine = self.call(TEXT, translator=['volcEngine', 'fake_ok'], if_return_engine=True)
+        self.assertEqual(engine, 'fake_ok')
+
+    def test_alias_resolves(self):
+        with mock.patch('translators.retired.TRANSLATOR_ALIASES', {'old_ok': 'fake_ok'}):
+            self.assertEqual(self.call(TEXT, translator='old_ok', if_return_engine=True), ('T:' + TEXT, 'fake_ok'))
+            self.assertEqual(self.call(TEXT, translator=['old_ok'], if_return_engine=True)[1], 'fake_ok')
+
+
 if __name__ == '__main__':
     unittest.main()
