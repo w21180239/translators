@@ -167,6 +167,7 @@ Some providers give a free quota once you register and create an API key. These 
 Credentials are read from, later wins:
 
 1. `~/.config/translators/credentials.toml` (or the path in `$TRANSLATORS_CREDENTIALS`). Keep it private with `chmod 600`; a file other users can read triggers a warning.
+   On macOS a value of `"@keychain"` is read from the login keychain (service `translators`, account `<engine>.<field>`); store it with `security add-generic-password -U -s translators -a deeplApi.api_key -w`, which prompts for the secret.
 2. Environment variables `TRANSLATORS_<ENGINE>_<FIELD>`, for example `TRANSLATORS_DEEPLAPI_API_KEY`.
 3. Keyword arguments of the call, for example `api_key='...'`.
 
