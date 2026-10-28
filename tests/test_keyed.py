@@ -81,6 +81,24 @@ class TestKeychain(_CredsCase):
         self.assertEqual(run.call_args.args[0][-5:], ['-s', 'translators', '-a', 'deeplApi.api_key', '-w'])
         self.assertEqual(credentials.get('deeplApi', 'api_key'), 'secret:fx')  # served from cache
 
+    def test_other_os_uses_keyring_package(self):
+        self.write('[azure]\napi_key = "@keyring"\n')
+        fake = mock.Mock()
+        fake.get_password.return_value = 'az-secret'
+        with mock.patch.object(credentials.sys, 'platform', 'win32'), mock.patch.dict('sys.modules', {'keyring': fake}):
+            creds = credentials.load()
+        self.assertEqual(creds['azure']['api_key'], 'az-secret')
+        fake.get_password.assert_called_once_with('translators', 'azure.api_key')
+
+    def test_other_os_without_keyring_package_warns(self):
+        self.write('[azure]\napi_key = "@keyring"\n')
+        with mock.patch.object(credentials.sys, 'platform', 'linux'), mock.patch.dict('sys.modules', {'keyring': None}), \
+                warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter('always')
+            creds = credentials.load()
+        self.assertFalse(credentials.is_configured('azure', creds))
+        self.assertTrue(any('pip install keyring' in str(x.message) for x in w))
+
     def test_missing_keychain_item_leaves_engine_unconfigured(self):
         self.write('[deeplApi]\napi_key = "@keychain"\n')
         with mock.patch.object(credentials.sys, 'platform', 'darwin'), \
@@ -90,7 +108,7 @@ class TestKeychain(_CredsCase):
             warnings.simplefilter('always')
             creds = credentials.load()
         self.assertFalse(credentials.is_configured('deeplApi', creds))
-        self.assertTrue(any('No keychain item' in str(x.message) for x in w))
+        self.assertTrue(any('No credential-store item' in str(x.message) for x in w))
 
 
 class TestPool(_CredsCase):
