@@ -21,7 +21,6 @@ RETIRED_TRANSLATORS: Dict[str, str] = {
     'tilde': 'translate.tilde.com now redirects to translate.tilde.ai, whose API is key-gated; '
              'the old letsmt.eu endpoints answer 400. Not ported yet.',
     'translateMe': 'translateme.network dropped its free web translator (the tm_my_action AJAX handler is gone).',
-    'volcEngine': 'translate.volcengine.com web translator is offline (HTTP 404).',
 }
 
 # old name -> engine that replaces it

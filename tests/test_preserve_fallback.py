@@ -251,11 +251,11 @@ class TestRetiredAndAliases(_ServerCase):
 
     def test_retired_single_name_raises_with_reason(self):
         with self.assertRaises(TranslatorError) as cm:
-            self.call(TEXT, translator='volcEngine')
+            self.call(TEXT, translator='judic')
         self.assertIn('retired', str(cm.exception))
 
     def test_retired_in_chain_is_skipped(self):
-        result, engine = self.call(TEXT, translator=['volcEngine', 'fake_ok'], if_return_engine=True)
+        result, engine = self.call(TEXT, translator=['judic', 'fake_ok'], if_return_engine=True)
         self.assertEqual(engine, 'fake_ok')
 
     def test_alias_resolves(self):
