@@ -242,6 +242,24 @@ class TestPresetAndHealth(_ServerCase):
 
 
 
+class TestEdgeEngine(unittest.TestCase):
+    def test_edge_registered_in_pools(self):
+        self.assertIn('edge', srv.tss.translators_pool)
+        self.assertIn('edge', srv_async.tss.translators_pool)
+        self.assertIn('edge', srv.__all__)
+        self.assertIn('edge', srv_async.__all__)
+
+    def test_edge_code_mapping(self):
+        for mod in (srv, srv_async):
+            self.assertEqual(mod.Edge.to_ms_code('zh-TW'), 'zh-Hant')
+            self.assertEqual(mod.Edge.to_ms_code('zh-Hant'), 'zh-Hant')
+            self.assertEqual(mod.Edge.to_ms_code('en'), 'en')
+            for code in ('zh', 'zh-CN', 'zh-Hans'):  # normalised to zh-Hans by check_language via zh_pool
+                mapped = mod.Edge.to_ms_code(code)
+                self.assertIn(mapped, mod.Tse().zh_pool + (mapped,))
+                self.assertEqual(mod.Tse().check_language('auto', mapped, {'zh-Hans': [], 'en': []}, output_auto='auto-detect', output_zh='zh-Hans'), ('auto-detect', 'zh-Hans'))
+
+
 class TestRetiredAndAliases(_ServerCase):
     def test_retired_engines_left_out_of_pool(self):
         from translators import retired
