@@ -57,6 +57,8 @@ import cryptography.hazmat.primitives.asymmetric.padding as cry_asym_padding
 
 from translators import preserve as preserve_helper
 from translators import retired as retired_helper
+from translators import credentials as credentials_helper
+from translators import keyed as keyed_helper
 
 
 SessionType = Union[aiohttp.ClientSession, httpx.AsyncClient]
@@ -6222,6 +6224,8 @@ class TranslatorsServer:
             self.translators_dict.pop(_name, None)
             self._translators_dict.pop(_name, None)
         self.translators_pool = list(self.translators_dict.keys())
+        self._keyed = {name: cls() for name, cls in keyed_helper.KEYED_CLASSES.items()}
+        self.keyed_translators = self.refresh_keyed_engines()
         self.not_en_langs = {"utibet": "ti", "mglip": "mon"}
         self.not_zh_langs = {
             "languageWire": "fr",
@@ -6234,6 +6238,28 @@ class TranslatorsServer:
         self.example_query_text = '你好。\n欢迎你！'
         self.success_translators_pool = []
         self.failure_translators_pool = []
+
+    def refresh_keyed_engines(self, path: Optional[str] = None) -> List[str]:
+        """
+        Put keyed (official API) engines whose credentials are configured into translators_pool, drop the rest.
+        Keyed engines are sync and run in the default executor.
+        :param path: credentials file, default ~/.config/translators/credentials.toml or $TRANSLATORS_CREDENTIALS.
+        :return: names of the configured keyed engines.
+        """
+        creds = credentials_helper.load(path)
+        on = [n for n in self._keyed if credentials_helper.is_configured(n, creds)]
+        for name, engine in self._keyed.items():
+            if name in on:
+                async def _api(query_text: str, from_language: str = 'auto', to_language: str = 'en', _engine=engine, **kwargs):
+                    call = functools.partial(_engine.api, query_text, from_language, to_language, **kwargs)
+                    return await asyncio.get_running_loop().run_in_executor(None, call)
+                self.translators_dict[name] = _api
+                self._translators_dict[name] = engine
+            else:
+                self.translators_dict.pop(name, None)
+                self._translators_dict.pop(name, None)
+        self.translators_pool[:] = list(self.translators_dict.keys())
+        return on
 
     @staticmethod
     def _resolve_translator(translator: str) -> str:
@@ -6602,6 +6628,7 @@ close = tss.close
 translators_pool = tss.translators_pool
 get_languages = tss.get_languages
 get_region_of_server = tss.get_region_of_server
+refresh_keyed_engines = tss.refresh_keyed_engines
 
 preaccelerate = tss.preaccelerate
 speedtest = tss.speedtest

@@ -160,6 +160,46 @@ print(ts.translate_text(
 
 The CLI accepts the same: `fanyi "Run `make test` first." --translator google,bing --to zh --preserve "`[^`]*`"` (`--preserve` is repeatable).
 
+## Official APIs With Your Own Key
+
+Some providers give a free quota once you register and create an API key. These keyed engines join `translators_pool` only when their credentials are configured; without credentials nothing changes.
+
+Credentials are read from, later wins:
+
+1. `~/.config/translators/credentials.toml` (or the path in `$TRANSLATORS_CREDENTIALS`). Keep it private with `chmod 600`; a file other users can read triggers a warning.
+2. Environment variables `TRANSLATORS_<ENGINE>_<FIELD>`, for example `TRANSLATORS_DEEPLAPI_API_KEY`.
+3. Keyword arguments of the call, for example `api_key='...'`.
+
+```toml
+[deeplApi]
+api_key = "xxxxxxxx:fx"
+
+[azure]
+api_key = "xxxxxxxx"
+region = "australiaeast"   # only for regional resources
+```
+
+```python
+import translators as ts
+ts.refresh_keyed_engines()          # re-read credentials after editing the file
+ts.translate_text('Hello', translator=['deeplApi', 'azure', 'google'], to_language='zh')
+```
+
+| Engine | Provider | Fields | Free quota (checked 2026-10) | Notes |
+| --- | --- | --- | --- | --- |
+| `deeplApi` | DeepL API | `api_key`, optional `host` | Developer plan: 1M chars in total, no reset; legacy Free keys: 500k/month | keys ending `:fx` use api-free.deepl.com; HTTP 456 means quota used up |
+| `azure` | Azure AI Translator | `api_key`, optional `region`, `endpoint` | F0: 2M chars/month | one F0 resource per subscription |
+| `googleCloud` | Google Cloud Translation Basic v2 | `api_key` | 500k chars/month as a $10 credit | billing must be enabled; overage is billed |
+| `baiduApi` | Baidu fanyi-api | `appid`, `secret_key` | standard tier 50k chars/month, 1 QPS | 1M/month needs personal verification |
+| `aliyunApi` | Alibaba Cloud Machine Translation | `access_key_id`, `access_key_secret`, optional `endpoint` | 1M chars/month | overage is billed; use a RAM key limited to `alimt:TranslateGeneral` |
+| `caiyunApi` | Caiyun (LingoCloud) | `token` | one-time 1M chars, valid one month | |
+| `youdaoApi` | Youdao openapi | `app_key`, `app_secret` | one-time 50 CNY credit | |
+| `niutransApi` | NiuTrans | `api_key` | 200k chars/day | request fields not yet confirmed against official docs |
+| `volcEngineApi` | Volcengine | `access_key_id`, `secret_access_key`, optional `region` | unverified | |
+
+Keyed engines are synchronous; the async server runs them in a thread.
+
+
 ## Command Line Interface
 
 You can leverage a simple CLI named **fanyi** that ships with **translators**.
