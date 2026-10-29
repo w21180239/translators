@@ -79,7 +79,7 @@ priority = 1
 - Key sets with the same priority take turns, one call each.
 - A key that gets HTTP 401, 402, 403 or 456 (DeepL quota used up) rests for an hour; HTTP 429 rests for a minute. Baidu and Youdao quota, auth and rate-limit error codes count the same. Resting keys are tried last. Other provider errors move on to the next key without a rest. A network error ends the call, so the fallback chain moves to the next engine.
 - The engine fails only when every key fails; the error lists each key set by label.
-- Rest periods live in the process. A new process tries every key again.
+- Turns and rest periods are shared by every process and survive restarts: they live in `~/.cache/translators/key-state.json` (`$XDG_CACHE_HOME` if set; `%LOCALAPPDATA%\translators\key-state.json` on Windows). The file holds engine names and key-set labels, never keys. Set `TRANSLATORS_STATE_FILE` to another path, or to `off` to keep the state in memory.
 - An `api_key` passed to the call replaces the configured key sets.
 
 ## Checking a configuration
