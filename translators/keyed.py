@@ -25,7 +25,7 @@ KEYED_CLASSES: Dict[str, Type['KeyedEngine']] = {}
 
 # Order of keyed engines inside a chain's 'keyed' token: quality first, providers that bill overage
 # automatically (googleCloud, baiduApi, aliyunApi) last.
-KEYED_PRIORITY = ('deeplApi', 'azure', 'volcEngineApi', 'caiyunApi', 'youdaoApi', 'niutransApi',
+KEYED_PRIORITY = ('deeplApi', 'volcEngineApi', 'azure', 'caiyunApi', 'youdaoApi', 'niutransApi',
                   'googleCloud', 'baiduApi', 'aliyunApi')
 
 TRAD_ZH = ('zh-TW', 'zh-tw', 'zh-Hant', 'zh-CHT', 'zh-HK', 'zh-hk')

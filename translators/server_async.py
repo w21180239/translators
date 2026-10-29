@@ -6395,7 +6395,7 @@ class TranslatorsServer:
                     raise TranslatorError('empty result')
             except Exception as e:
                 if not isinstance(e, preserve_helper.PreserveError):
-                    preserve_helper.HEALTH.fail(engine)
+                    preserve_helper.HEALTH.fail(engine, preserve_helper.is_rate_limited(e))
                 failures.append((engine, '{}: {}'.format(type(e).__name__, e)))
                 continue
             preserve_helper.HEALTH.ok(engine)

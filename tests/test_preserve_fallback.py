@@ -249,7 +249,7 @@ class TestAutoChain(_ServerCase):
         with mock.patch.dict(os.environ, {'TRANSLATORS_CHAIN': 'keyed,auto,edge'}):
             self.assertEqual(pv.expand_chain(['auto', 'bing'], ['deeplApi']), ['deeplApi', 'edge', 'bing'])
         with mock.patch.dict(os.environ, {'TRANSLATORS_CHAIN': ''}):
-            self.assertEqual(pv.expand_chain(['auto'], [])[:3], ['google', 'edge', 'bing'])
+            self.assertEqual(pv.expand_chain(['auto'], [])[:3], ['google', 'youdao', 'volcEngine'])
 
     def test_configured_keyed_follows_priority_not_pool_order(self):
         with mock.patch.object(self.tss, 'translators_pool', ['aliyunApi', 'google', 'deeplApi', 'azure']):
@@ -266,6 +266,20 @@ class TestAutoChain(_ServerCase):
         self.call('hi', translator='fake_ok,fake_raise', timeout=3)
         self.call('hi', translator='fake_ok')
         self.assertEqual(seen, [pv.CHAIN_TIMEOUT, 3, 'unset'])
+
+    def test_rate_limit_starts_cooldown_at_once(self):
+        def limited(query_text, **kw):
+            raise RuntimeError('429 Client Error: Too Many Requests for url: https://x')
+        self.tss.translators_dict['fake_raise'] = limited
+        self.call('hi', translator='fake_raise,fake_ok')
+        self.assertTrue(pv.HEALTH.is_cooling('fake_raise'))
+        self.call('hi', translator='fake_empty,fake_ok')  # an ordinary failure still needs the threshold
+        self.assertFalse(pv.HEALTH.is_cooling('fake_empty'))
+
+    def test_is_rate_limited(self):
+        self.assertTrue(pv.is_rate_limited(mock.Mock(response=mock.Mock(status_code=429))))
+        self.assertTrue(pv.is_rate_limited(RuntimeError('deeplApi: HTTP 429 slow down')))
+        self.assertFalse(pv.is_rate_limited(RuntimeError('HTTP 500')))
 
     def test_keyed_engines_have_a_priority(self):
         from translators import keyed

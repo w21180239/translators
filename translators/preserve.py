@@ -16,7 +16,7 @@ import threading
 from typing import Dict, Iterable, List, Optional, Tuple, Union
 
 __all__ = ('PreserveError', 'PRESETS', 'expand_patterns', 'EngineHealth', 'HEALTH',
-           'normalize_engines', 'CHAIN_TIMEOUT', 'AUTO_CHAIN', 'CHAIN_TOKENS', 'expand_chain',
+           'normalize_engines', 'CHAIN_TIMEOUT', 'AUTO_CHAIN', 'CHAIN_TOKENS', 'expand_chain', 'is_rate_limited',
            'mask', 'restore')
 
 _EXT = (r'py|js|ts|tsx|jsx|go|rs|php|rb|java|kt|swift|c|h|cpp|cs|sh|md|txt|log|json|ya?ml|toml'
@@ -75,9 +75,10 @@ class EngineHealth:
             self._fails.pop(engine, None)
             self._since.pop(engine, None)
 
-    def fail(self, engine: str) -> None:
+    def fail(self, engine: str, rate_limited: bool = False) -> None:
+        """A rate-limited failure (HTTP 429) starts the cooldown at once."""
         with self._lock:
-            self._fails[engine] = self._fails.get(engine, 0) + 1
+            self._fails[engine] = self.threshold if rate_limited else self._fails.get(engine, 0) + 1
             if self._fails[engine] >= self.threshold:
                 self._since.setdefault(engine, time.monotonic())
 
@@ -128,8 +129,15 @@ def normalize_engines(translator: Union[str, Iterable[str]]) -> List[str]:
 CHAIN_TIMEOUT = 15.0
 
 # 'auto' expands to this; 'keyed' expands to the configured keyed engines. Override with $TRANSLATORS_CHAIN.
-AUTO_CHAIN = 'google,edge,bing,keyed,volcEngine,caiyun,sogou,papago,myMemory,youdao'
+AUTO_CHAIN = 'google,youdao,keyed,volcEngine,bing,lara,qqTranSmart,modernMt,edge'
 CHAIN_TOKENS = ('auto', 'keyed')
+
+
+def is_rate_limited(error: BaseException) -> bool:
+    """True for an HTTP 429 from any client library, or a message saying so."""
+    response = getattr(error, 'response', None)
+    status = getattr(response, 'status_code', None) or getattr(response, 'status', None)
+    return status == 429 or ' 429' in str(error) or 'Too Many Requests' in str(error)
 
 
 def expand_chain(engines: List[str], keyed: List[str]) -> List[str]:
