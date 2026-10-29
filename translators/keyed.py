@@ -7,14 +7,15 @@ required credentials are configured (see credentials.py). Sync implementations; 
 runs them in a thread.
 """
 
+import threading
 import time
-from typing import Callable, Dict, Optional, Tuple, Type, Union
+from typing import Callable, Dict, List, Optional, Tuple, Type, Union
 
 import requests
 
 from translators import credentials
 
-__all__ = ('KeyedEngineError', 'KeyedEngine', 'KEYED_CLASSES', 'KEYED_PRIORITY', 'register', 'DeeplApi', 'Azure', 'GoogleCloud',
+__all__ = ('KeyedEngineError', 'KeyedEngine', 'KEYED_CLASSES', 'KEYED_PRIORITY', 'KEY_COOLDOWN', 'KeyRotation', 'KEYS', 'register', 'DeeplApi', 'Azure', 'GoogleCloud',
            'BaiduApi', 'YoudaoApi', 'CaiyunApi', 'NiutransApi', 'AliyunApi', 'VolcEngineApi',
            'aliyun_rpc_sign', 'volc_sign')
 
@@ -30,7 +31,64 @@ SIMP_ZH = ('zh', 'zh-CN', 'zh-cn', 'zh-CHS', 'zh-Hans', 'zh-Hans_CN', 'cn', 'chi
 
 
 class KeyedEngineError(Exception):
-    pass
+    """Provider rejected the call; the next key set is tried. `cooldown` > 0 rests this key that long (quota, auth, rate limit)."""
+
+    def __init__(self, message: str = '', cooldown: float = 0.0):
+        super().__init__(message)
+        self.cooldown = cooldown
+
+
+# Seconds a key rests after these HTTP statuses: auth / payment / DeepL quota (456) for an hour, rate limit for a minute.
+KEY_COOLDOWN = {401: 3600.0, 402: 3600.0, 403: 3600.0, 456: 3600.0, 429: 60.0}
+DEFAULT_PRIORITY = 10
+META_FIELDS = ('priority',)  # key-set fields that are not credentials
+
+
+class KeyRotation:
+    """
+    Picks the key-set order for each call: lower `priority` first; key sets that share a priority take
+    turns (round robin); a key set resting after a quota, auth or rate-limit error goes to the end.
+    """
+
+    def __init__(self):
+        self._turn: Dict[Tuple[str, int], int] = {}
+        self._until: Dict[Tuple[str, str], float] = {}
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def priority(fields: Dict[str, str]) -> int:
+        try:
+            return int(fields.get('priority', DEFAULT_PRIORITY))
+        except ValueError:
+            return DEFAULT_PRIORITY
+
+    def order(self, engine: str, sets: List[Tuple[str, Dict[str, str]]]) -> List[Tuple[str, Dict[str, str]]]:
+        out, now = [], time.monotonic()
+        with self._lock:
+            for prio in sorted({self.priority(f) for _, f in sets}):
+                tier = [s for s in sets if self.priority(s[1]) == prio]
+                turn = self._turn.get((engine, prio), 0)
+                self._turn[(engine, prio)] = turn + 1
+                k = turn % len(tier)
+                out.extend(tier[k:] + tier[:k])
+            resting = [s for s in out if self._until.get((engine, s[0]), 0) > now]
+        return [s for s in out if s not in resting] + resting
+
+    def rest(self, engine: str, label: str, seconds: float) -> None:
+        with self._lock:
+            self._until[(engine, label)] = time.monotonic() + seconds
+
+    def ok(self, engine: str, label: str) -> None:
+        with self._lock:
+            self._until.pop((engine, label), None)
+
+    def reset(self) -> None:
+        with self._lock:
+            self._turn.clear()
+            self._until.clear()
+
+
+KEYS = KeyRotation()
 
 
 def register(name: str, required: Tuple[str, ...], optional: Tuple[str, ...] = ()) -> Callable:
@@ -62,7 +120,7 @@ class KeyedEngine:
         return lang
 
     def cred(self, field: str, kwargs: dict) -> str:
-        value = credentials.get(self.name, field, kwargs)
+        value = kwargs.get(field)
         if not value and field in self.required:
             raise KeyedEngineError(f'{self.name}: missing credential `{field}`')
         return value
@@ -76,15 +134,32 @@ class KeyedEngine:
     def post(self, url: str, kwargs: dict, **req) -> Union[dict, list]:
         r = self.client(kwargs).post(url, timeout=kwargs.get('timeout') or 20, **req)
         if r.status_code >= 400:
-            raise KeyedEngineError(f'{self.name}: HTTP {r.status_code} {r.text[:200]}')
+            raise KeyedEngineError(f'{self.name}: HTTP {r.status_code} {r.text[:200]}', KEY_COOLDOWN.get(r.status_code, 0.0))
         return r.json()
 
     def api(self, query_text: str, from_language: str = 'auto', to_language: str = 'en', **kwargs) -> Union[str, dict, list]:
         if not query_text.strip():
             return query_text
-        sleep_seconds = kwargs.get('sleep_seconds', 0)
-        result = self.translate(query_text, self.code(from_language), self.code(to_language), kwargs)
-        time.sleep(sleep_seconds)
+        src, tgt = self.code(from_language), self.code(to_language)
+        sets = credentials.key_sets(self.name)
+        if not sets or all(kwargs.get(f) for f in self.required):  # call kwargs replace the configured keys
+            result = self.translate(query_text, src, tgt, {**(sets[0][1] if sets else {}), **kwargs})
+        else:
+            result, errors = None, []
+            for label, fields in KEYS.order(self.name, sets):
+                kw = {**{k: v for k, v in fields.items() if k not in META_FIELDS}, **kwargs}
+                try:
+                    result = self.translate(query_text, src, tgt, kw)
+                except KeyedEngineError as e:
+                    errors.append(f'[{label}] {e}')
+                    if e.cooldown:
+                        KEYS.rest(self.name, label, e.cooldown)
+                    continue
+                KEYS.ok(self.name, label)
+                break
+            else:
+                raise KeyedEngineError(f'{self.name}: every key failed: ' + '; '.join(errors))
+        time.sleep(kwargs.get('sleep_seconds', 0))
         return result
 
     def translate(self, text: str, src: Optional[str], tgt: str, kwargs: dict) -> Union[str, dict, list]:
@@ -164,7 +239,8 @@ class BaiduApi(KeyedEngine):
                 'sign': self.sign(appid, text, salt, secret_key)}
         data = self.post('https://fanyi-api.baidu.com/api/trans/vip/translate', kwargs, data=form)
         if 'error_code' in data and str(data['error_code']) != '52000':
-            raise KeyedEngineError(f"{self.name}: {data['error_code']} {data.get('error_msg', '')}")
+            raise KeyedEngineError(f"{self.name}: {data['error_code']} {data.get('error_msg', '')}",
+                                   {'54004': 3600.0, '58002': 3600.0, '52003': 3600.0, '54003': 60.0}.get(str(data['error_code']), 0.0))
         return data if kwargs.get('is_detail_result') else '\n'.join(x['dst'] for x in data['trans_result'])
 
 
@@ -186,7 +262,8 @@ class YoudaoApi(KeyedEngine):
                 'curtime': curtime, 'sign': self.sign(app_key, text, salt, curtime, app_secret)}
         data = self.post('https://openapi.youdao.com/api', kwargs, data=form)
         if str(data.get('errorCode')) != '0':
-            raise KeyedEngineError(f"{self.name}: errorCode {data.get('errorCode')}")
+            raise KeyedEngineError(f"{self.name}: errorCode {data.get('errorCode')}",
+                                   {'401': 3600.0, '108': 3600.0, '411': 60.0}.get(str(data.get('errorCode')), 0.0))
         return data if kwargs.get('is_detail_result') else '\n'.join(data['translation'])
 
 

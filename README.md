@@ -184,6 +184,8 @@ api_key = "xxxxxxxx"
 region = "australiaeast"   # only for regional resources
 ```
 
+Add `[deeplApi.<label>]` tables for more keys of the same provider. Lower `priority` (default 10) is tried first, keys with the same priority take turns, and a key that runs out of quota or is rejected rests for an hour while the others carry on. See [docs/configure-keys.md](docs/configure-keys.md#several-keys-for-one-provider).
+
 ```python
 import translators as ts
 ts.refresh_keyed_engines()          # re-read credentials after editing the file
