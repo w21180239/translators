@@ -31,6 +31,7 @@ class _CredsCase(unittest.TestCase):
         self.path = os.path.join(self.dir, 'credentials.toml')
         env = {k: v for k, v in os.environ.items() if not k.startswith('TRANSLATORS_')}
         env['TRANSLATORS_CREDENTIALS'] = self.path
+        env['TRANSLATORS_STATE_FILE'] = os.path.join(self.dir, 'key-state.json')
         patcher = mock.patch.dict(os.environ, env, clear=True)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -240,7 +241,7 @@ class TestKeySets(_CredsCase):
             keyed.DeeplApi().api('Hello', 'en', 'zh')
             keyed.DeeplApi().api('Hello', 'en', 'zh')
             self.assertEqual(used, ['x:fx', 'y:fx', 'y:fx'])
-            keyed.KEYS._until[('deeplApi', 'x')] = 0  # rest over
+            keyed.KEYS.rest('deeplApi', 'x', -1)  # rest over
             keyed.DeeplApi().api('Hello', 'en', 'zh')
         self.assertEqual(used[-2:], ['x:fx', 'y:fx'])  # x tried first again, still limited
 
@@ -261,6 +262,31 @@ class TestKeySets(_CredsCase):
                 self.assertRaises(requests.ConnectionError):
             keyed.DeeplApi().api('Hello', 'en', 'zh')
         self.assertEqual(p.call_count, 1)
+
+    def test_turns_and_rests_shared_across_processes(self):
+        sets = [('a', {'api_key': 'a'}), ('b', {'api_key': 'b'}), ('c', {'api_key': 'c', 'priority': '20'})]
+        first = keyed.KeyRotation()  # a fresh instance stands in for a new process
+        self.assertEqual([lb for lb, _ in first.order('deeplApi', sets)], ['a', 'b', 'c'])
+        first.rest('deeplApi', 'c', 3600)
+        second = keyed.KeyRotation()
+        self.assertEqual([lb for lb, _ in second.order('deeplApi', sets)], ['b', 'a', 'c'])
+        self.assertTrue(second.is_resting('deeplApi', 'c'))
+        with open(os.environ['TRANSLATORS_STATE_FILE']) as f:
+            self.assertNotIn('api_key', f.read())
+
+    def test_state_file_off_keeps_state_in_memory(self):
+        os.environ['TRANSLATORS_STATE_FILE'] = 'off'
+        sets = [('a', {}), ('b', {})]
+        keyed.KeyRotation().order('deeplApi', sets)
+        self.assertEqual([lb for lb, _ in keyed.KeyRotation().order('deeplApi', sets)], ['a', 'b'])
+        self.assertIsNone(keyed.state_path())
+
+    def test_unwritable_state_file_is_ignored(self):
+        os.environ['TRANSLATORS_STATE_FILE'] = os.path.join(self.path, 'nested', 'state.json')  # parent is a file
+        self.write('')
+        rot = keyed.KeyRotation()
+        rot.order('deeplApi', [('a', {}), ('b', {})])
+        self.assertEqual([lb for lb, _ in rot.order('deeplApi', [('a', {}), ('b', {})])], ['b', 'a'])
 
     def test_call_kwarg_key_replaces_configured_sets(self):
         self.write('[deeplApi.x]\napi_key = "x:fx"\n')

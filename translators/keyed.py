@@ -7,6 +7,8 @@ required credentials are configured (see credentials.py). Sync implementations; 
 runs them in a thread.
 """
 
+import json
+import os
 import threading
 import time
 from typing import Callable, Dict, List, Optional, Tuple, Type, Union
@@ -15,7 +17,7 @@ import requests
 
 from translators import credentials
 
-__all__ = ('KeyedEngineError', 'KeyedEngine', 'KEYED_CLASSES', 'KEYED_PRIORITY', 'KEY_COOLDOWN', 'KeyRotation', 'KEYS', 'register', 'DeeplApi', 'Azure', 'GoogleCloud',
+__all__ = ('KeyedEngineError', 'KeyedEngine', 'KEYED_CLASSES', 'KEYED_PRIORITY', 'KEY_COOLDOWN', 'KeyRotation', 'KEYS', 'state_path', 'register', 'DeeplApi', 'Azure', 'GoogleCloud',
            'BaiduApi', 'YoudaoApi', 'CaiyunApi', 'NiutransApi', 'AliyunApi', 'VolcEngineApi',
            'aliyun_rpc_sign', 'volc_sign')
 
@@ -44,15 +46,27 @@ DEFAULT_PRIORITY = 10
 META_FIELDS = ('priority',)  # key-set fields that are not credentials
 
 
+def state_path() -> Optional[str]:
+    """Key-rotation state file shared by every process; $TRANSLATORS_STATE_FILE overrides, 'off' keeps it in memory."""
+    path = os.environ.get('TRANSLATORS_STATE_FILE')
+    if path:
+        return None if path.lower() in ('off', 'none', '0') else path
+    base = (os.environ.get('LOCALAPPDATA') if os.name == 'nt' else None) or os.environ.get('XDG_CACHE_HOME') \
+        or os.path.join(os.path.expanduser('~'), '.cache')
+    return os.path.join(base, 'translators', 'key-state.json')
+
+
 class KeyRotation:
     """
     Picks the key-set order for each call: lower `priority` first; key sets that share a priority take
     turns (round robin); a key set resting after a quota, auth or rate-limit error goes to the end.
+    Turns and rest deadlines (wall clock) are kept in `state_path()`, so separate processes and runs share
+    them. The file holds engine names and key-set labels only, never keys. Concurrent writers may lose a turn.
     """
 
     def __init__(self):
-        self._turn: Dict[Tuple[str, int], int] = {}
-        self._until: Dict[Tuple[str, str], float] = {}
+        self._turn: Dict[str, int] = {}     # '<engine>|<priority>' -> calls so far
+        self._until: Dict[str, float] = {}  # '<engine>|<label>' -> epoch seconds the key rests until
         self._lock = threading.Lock()
 
     @staticmethod
@@ -62,30 +76,70 @@ class KeyRotation:
         except ValueError:
             return DEFAULT_PRIORITY
 
+    def _load(self) -> None:
+        path = state_path()
+        if not path:
+            return
+        try:
+            with open(path, encoding='utf-8') as f:
+                data = json.load(f)
+            self._turn = {k: int(v) for k, v in data.get('turn', {}).items()}
+            self._until = {k: float(v) for k, v in data.get('rest', {}).items() if float(v) > time.time()}
+        except (OSError, ValueError, AttributeError):
+            pass  # missing or unreadable: keep what this process knows
+
+    def _save(self) -> None:
+        path = state_path()
+        if not path:
+            return
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp = f'{path}.{os.getpid()}.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump({'turn': self._turn, 'rest': self._until}, f)
+            os.replace(tmp, path)
+        except OSError:
+            pass  # read-only home etc.: rotation still works within this process
+
     def order(self, engine: str, sets: List[Tuple[str, Dict[str, str]]]) -> List[Tuple[str, Dict[str, str]]]:
-        out, now = [], time.monotonic()
+        out = []
         with self._lock:
+            self._load()
             for prio in sorted({self.priority(f) for _, f in sets}):
                 tier = [s for s in sets if self.priority(s[1]) == prio]
-                turn = self._turn.get((engine, prio), 0)
-                self._turn[(engine, prio)] = turn + 1
-                k = turn % len(tier)
-                out.extend(tier[k:] + tier[:k])
-            resting = [s for s in out if self._until.get((engine, s[0]), 0) > now]
+                if len(tier) > 1:
+                    key = f'{engine}|{prio}'
+                    turn = self._turn.get(key, 0)
+                    self._turn[key] = (turn + 1) % len(tier)
+                    tier = tier[turn % len(tier):] + tier[:turn % len(tier)]
+                out.extend(tier)
+            now = time.time()
+            resting = [s for s in out if self._until.get(f'{engine}|{s[0]}', 0) > now]
+            self._save()
         return [s for s in out if s not in resting] + resting
 
     def rest(self, engine: str, label: str, seconds: float) -> None:
         with self._lock:
-            self._until[(engine, label)] = time.monotonic() + seconds
+            self._load()
+            self._until[f'{engine}|{label}'] = time.time() + seconds
+            self._save()
 
     def ok(self, engine: str, label: str) -> None:
         with self._lock:
-            self._until.pop((engine, label), None)
+            self._load()
+            if self._until.pop(f'{engine}|{label}', None) is not None:
+                self._save()
+
+    def is_resting(self, engine: str, label: str) -> bool:
+        with self._lock:
+            self._load()
+            return self._until.get(f'{engine}|{label}', 0) > time.time()
 
     def reset(self) -> None:
         with self._lock:
             self._turn.clear()
             self._until.clear()
+            self._save()
 
 
 KEYS = KeyRotation()
