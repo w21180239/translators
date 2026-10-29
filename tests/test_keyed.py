@@ -176,6 +176,100 @@ class TestEngines(_EngineCase):
         self.assertEqual(out, '你好')
 
 
+def deepl_reply(by_key):
+    """requests.Session.post stand-in: by_key maps an api_key to a FakeResponse; records the keys used."""
+    used = []
+
+    def post(self, url, **kw):
+        key = kw['headers']['Authorization'].split()[-1]
+        used.append(key)
+        return by_key[key]
+    return post, used
+
+
+OK = FakeResponse({'translations': [{'text': '你好'}]})
+
+
+class TestKeySets(_CredsCase):
+    def setUp(self):
+        super().setUp()
+        keyed.KEYS.reset()
+        self.addCleanup(keyed.KEYS.reset)
+
+    def test_subtables_env_sets_and_inheritance(self):
+        self.write('[azure]\napi_key = "a0"\nregion = "eastus"\n\n[azure.second]\napi_key = "a2"\n\n'
+                   '[azure.third]\nregion = "westus"\n')  # third has no api_key: skipped
+        os.environ['TRANSLATORS_AZURE_API_KEY_2'] = 'a-env'
+        credentials.load()
+        self.assertEqual(credentials.key_sets('azure'), [
+            ('default', {'api_key': 'a0', 'region': 'eastus'}),
+            ('second', {'api_key': 'a2', 'region': 'eastus'}),
+            ('2', {'api_key': 'a-env'})])
+
+    def test_subtable_keyring_accounts(self):
+        self.write('[deeplApi.free]\napi_key = "@keyring"\n\n[deeplApi.dev]\napi_key = "@keyring:deeplApi.api_key"\n')
+        accounts = []
+
+        def run(cmd, **kw):
+            accounts.append(cmd[cmd.index('-a') + 1])
+            return mock.Mock(returncode=0, stdout=accounts[-1] + '-secret\n')
+        with mock.patch.object(credentials.sys, 'platform', 'darwin'), \
+                mock.patch.object(credentials.os.path, 'exists', return_value=True), \
+                mock.patch.object(credentials.subprocess, 'run', side_effect=run):
+            credentials.load()
+        self.assertEqual(accounts, ['deeplApi.free.api_key', 'deeplApi.api_key'])
+        self.assertEqual([lb for lb, _ in credentials.key_sets('deeplApi')], ['free', 'dev'])
+        self.assertTrue(credentials.is_configured('deeplApi'))
+
+    def test_priority_first_then_round_robin_within_tier(self):
+        self.write('[deeplApi.free]\napi_key = "f:fx"\npriority = 1\n\n[deeplApi.a]\napi_key = "a:fx"\n\n'
+                   '[deeplApi.b]\napi_key = "b:fx"\n')
+        credentials.load()
+        post, used = deepl_reply({'f:fx': FakeResponse('quota', 456), 'a:fx': OK, 'b:fx': OK})
+        with mock.patch('requests.Session.post', post):
+            for _ in range(4):
+                self.assertEqual(keyed.DeeplApi().api('Hello', 'en', 'zh'), '你好')
+        # free tried first, then rests an hour; a and b alternate
+        self.assertEqual(used, ['f:fx', 'a:fx', 'b:fx', 'a:fx', 'b:fx'])
+
+    def test_rate_limit_rests_briefly_and_recovers(self):
+        self.write('[deeplApi.x]\napi_key = "x:fx"\npriority = 1\n\n[deeplApi.y]\napi_key = "y:fx"\n')
+        credentials.load()
+        post, used = deepl_reply({'x:fx': FakeResponse('slow down', 429), 'y:fx': OK})
+        with mock.patch('requests.Session.post', post):
+            keyed.DeeplApi().api('Hello', 'en', 'zh')
+            keyed.DeeplApi().api('Hello', 'en', 'zh')
+            self.assertEqual(used, ['x:fx', 'y:fx', 'y:fx'])
+            keyed.KEYS._until[('deeplApi', 'x')] = 0  # rest over
+            keyed.DeeplApi().api('Hello', 'en', 'zh')
+        self.assertEqual(used[-2:], ['x:fx', 'y:fx'])  # x tried first again, still limited
+
+    def test_every_key_failed_names_each_key(self):
+        self.write('[deeplApi.x]\napi_key = "x:fx"\n\n[deeplApi.y]\napi_key = "y:fx"\n')
+        credentials.load()
+        post, _ = deepl_reply({'x:fx': FakeResponse('bad', 403), 'y:fx': FakeResponse('quota', 456)})
+        with mock.patch('requests.Session.post', post), self.assertRaises(keyed.KeyedEngineError) as cm:
+            keyed.DeeplApi().api('Hello', 'en', 'zh')
+        self.assertIn('[x]', str(cm.exception))
+        self.assertIn('[y]', str(cm.exception))
+
+    def test_network_error_does_not_try_other_keys(self):
+        self.write('[deeplApi.x]\napi_key = "x:fx"\n\n[deeplApi.y]\napi_key = "y:fx"\n')
+        credentials.load()
+        import requests
+        with mock.patch('requests.Session.post', side_effect=requests.ConnectionError('down')) as p, \
+                self.assertRaises(requests.ConnectionError):
+            keyed.DeeplApi().api('Hello', 'en', 'zh')
+        self.assertEqual(p.call_count, 1)
+
+    def test_call_kwarg_key_replaces_configured_sets(self):
+        self.write('[deeplApi.x]\napi_key = "x:fx"\n')
+        credentials.load()
+        post, used = deepl_reply({'k:fx': OK})
+        with mock.patch('requests.Session.post', post):
+            keyed.DeeplApi().api('Hello', 'en', 'zh', api_key='k:fx')
+        self.assertEqual(used, ['k:fx'])
+
 
 class TestSigning(unittest.TestCase):
     def test_baidu_official_vector(self):

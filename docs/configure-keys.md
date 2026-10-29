@@ -61,6 +61,27 @@ The library reads credentials once at import. After editing the file or keychain
 
 Free quotas and overage rules change; see the table in the README. Alibaba Cloud and Google bill overage automatically, so set a budget alert there.
 
+## Several keys for one provider
+
+Each `[engine.<label>]` table is one more key set for that engine. It takes the same fields and inherits the optional fields (`region`, `host`, `endpoint`) of `[engine]`. Environment sets use a numeric suffix: `TRANSLATORS_DEEPLAPI_API_KEY_2`.
+
+```toml
+[deeplApi]                 # account deeplApi.api_key
+api_key = "@keyring"
+
+[deeplApi.free]            # account deeplApi.free.api_key
+api_key = "@keyring"
+priority = 1
+```
+
+- `"@keyring"` in `[engine.<label>]` reads account `<engine>.<label>.<field>`. `"@keyring:<account>"` reads any account by name.
+- `priority` (default 10): lower is tried first. Put keys whose quota resets monthly ahead of one-time credits.
+- Key sets with the same priority take turns, one call each.
+- A key that gets HTTP 401, 402, 403 or 456 (DeepL quota used up) rests for an hour; HTTP 429 rests for a minute. Baidu and Youdao quota, auth and rate-limit error codes count the same. Resting keys are tried last. Other provider errors move on to the next key without a rest. A network error ends the call, so the fallback chain moves to the next engine.
+- The engine fails only when every key fails; the error lists each key set by label.
+- Rest periods live in the process. A new process tries every key again.
+- An `api_key` passed to the call replaces the configured key sets.
+
 ## Checking a configuration
 
 ```python
